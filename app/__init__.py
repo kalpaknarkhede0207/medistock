@@ -1,0 +1,1 @@
+# MediStock PaddleOCR Backend Package
