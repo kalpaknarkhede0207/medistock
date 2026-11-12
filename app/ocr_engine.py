@@ -34,8 +34,15 @@ class PaddleOcrManager:
     def predict(self, image_np) -> Dict[str, Any]:
         """
         Runs OCR on numpy image and extracts rec_texts, rec_scores, rec_boxes, rec_polys.
+        Explicitly disable doc preprocessor and textline orientation in predict()
+        to bypass the 250+ sequential classification passes.
         """
-        results = self.ocr.predict(image_np)
+        results = self.ocr.predict(
+            image_np,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False
+        )
         if not results:
             return {"rec_texts": [], "rec_scores": [], "rec_boxes": [], "rec_polys": []}
 

@@ -30,7 +30,7 @@ if _orig_json_schema:
 
 import spaces
 import gradio as gr
-from fastapi import File, UploadFile, HTTPException, Header
+from fastapi import File, UploadFile, HTTPException, Header, Response
 from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
 from app.table_reconstructor import TableReconstructor
@@ -81,10 +81,12 @@ def run_ocr_pipeline(image_bytes: bytes):
         image_width=img_w
     )
     t_recon = time.time()
-    print(f"[Timing] Preprocessing: {round(t_geo - t0, 3)}s | OCR: {round(t_ocr - t_geo, 3)}s ({len(texts)} texts) | Reconstruction: {round(t_recon - t_ocr, 3)}s | Total: {round(t_recon - t0, 3)}s")
-    return draft_bill
+    timings = f"geo={round(t_geo - t0, 3)}s, ocr={round(t_ocr - t_geo, 3)}s ({len(texts)} texts), recon={round(t_recon - t_ocr, 3)}s, total={round(t_recon - t0, 3)}s"
+    print(f"[Timing] {timings}")
+    return draft_bill, timings
 
 async def parse_bill_api(
+    response: Response,
     file: UploadFile = File(...),
     x_api_key: str = Header(None, alias="X-Api-Key")
 ):
@@ -107,8 +109,10 @@ async def parse_bill_api(
                 detail=f"Payload Too Large: Maximum allowed invoice image size is 15 MB (uploaded {len(image_bytes)} bytes)."
             )
 
-        draft_bill = run_ocr_pipeline(image_bytes)
+        draft_bill, timings = run_ocr_pipeline(image_bytes)
         elapsed = round(time.time() - start_time, 2)
+        response.headers["X-Process-Time"] = f"{elapsed}s"
+        response.headers["X-OCR-Timings"] = timings
         print(f"[PaddleOCR] Successfully processed {file.filename} in {elapsed}s: {len(draft_bill.items)} items extracted.")
         return draft_bill.model_dump()
 
@@ -126,7 +130,7 @@ def parse_invoice_gradio(image):
     try:
         img_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         _, buffer = cv2.imencode(".jpg", img_bgr)
-        draft = run_ocr_pipeline(buffer.tobytes())
+        draft, _ = run_ocr_pipeline(buffer.tobytes())
         return json.dumps(draft.model_dump(), indent=2)
     except Exception as e:
         return f"Error: {str(e)}"
