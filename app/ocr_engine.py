@@ -1,4 +1,5 @@
 import os
+import threading
 
 # Disable MKLDNN/oneDNN to prevent PIR ConvertPirAttribute2RuntimeAttribute crash
 os.environ["FLAGS_use_mkldnn"] = "0"
@@ -41,23 +42,24 @@ class PaddleOcrManager:
         except Exception as e:
             print(f"Notice: text_rec batch size adjustment: {e}")
 
+        self._lock = threading.Lock()
         print("PaddleOCR Engine Ready!")
 
     def predict(self, image_np) -> Dict[str, Any]:
         """
         Runs OCR on numpy image and extracts rec_texts, rec_scores, rec_boxes, rec_polys.
-        Explicitly disable doc preprocessor and textline orientation in predict()
-        to bypass the 250+ sequential classification passes.
+        Thread-safe inference using instance lock.
         """
-        results = self.ocr.predict(
-            image_np,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            text_det_limit_side_len=1280,
-            text_det_thresh=0.35,
-            text_det_box_thresh=0.65
-        )
+        with self._lock:
+            results = self.ocr.predict(
+                image_np,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                text_det_limit_side_len=1280,
+                text_det_thresh=0.35,
+                text_det_box_thresh=0.65
+            )
         if not results:
             return {"rec_texts": [], "rec_scores": [], "rec_boxes": [], "rec_polys": []}
 

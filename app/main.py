@@ -1,11 +1,23 @@
 import io
+import os
 import time
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from app.models import OcrDraftBillResponse
 from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
 from app.table_reconstructor import TableReconstructor
+
+EXPECTED_API_KEY = os.environ.get("OCR_API_KEY", "medistock_sec_9b7c841f3e2a05d8")
+MAX_PAYLOAD_SIZE = 15 * 1024 * 1024  # 15 MB payload ceiling to prevent OOM
+
+async def verify_api_key(x_api_key: str = Header(None)):
+    """Verifies that requests to the OCR backend originate from an authorized MediStock client."""
+    if not x_api_key or x_api_key != EXPECTED_API_KEY:
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Invalid or missing X-Api-Key authentication header."
+        )
 
 app = FastAPI(
     title="MediStock PaddleOCR + OpenCV Engine",
@@ -47,12 +59,20 @@ def health_check():
     }
 
 @app.post("/ocr/parse-bill", response_model=OcrDraftBillResponse)
-async def parse_bill(file: UploadFile = File(...)):
+async def parse_bill(
+    file: UploadFile = File(...),
+    _auth: None = Depends(verify_api_key)
+):
     start_time = time.time()
     try:
         image_bytes = await file.read()
         if not image_bytes:
             raise HTTPException(status_code=400, detail="Empty image uploaded.")
+        if len(image_bytes) > MAX_PAYLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Image size exceeds 15 MB limit ({len(image_bytes) / (1024 * 1024):.2f} MB)."
+            )
 
         # 1. OpenCV Preprocessing & Perspective Transform
         corrected_img, meta = preprocess_and_correct_perspective(image_bytes)
