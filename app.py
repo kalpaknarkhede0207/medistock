@@ -141,12 +141,12 @@ from gradio.routes import App
 _orig_create_app = App.create_app
 def _custom_create_app(blocks, *args, **kwargs):
     app = _orig_create_app(blocks, *args, **kwargs)
-    app.add_api_route("/health", health_check, methods=["GET"])
+    app.add_api_route("/health", health_check, methods=["GET", "HEAD"])
     app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"])
     return app
 App.create_app = _custom_create_app
 
-demo.app.add_api_route("/health", health_check, methods=["GET"])
+demo.app.add_api_route("/health", health_check, methods=["GET", "HEAD"])
 demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"])
 
 if __name__ == "__main__":
