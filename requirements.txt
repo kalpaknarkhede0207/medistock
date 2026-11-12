@@ -6,4 +6,5 @@ paddleocr==3.4.1
 opencv-python-headless>=4.8.0.76
 pydantic>=2.0.0
 numpy>=1.24.0
-gradio>=4.0.0
+huggingface_hub>=0.26.0
+gradio>=5.9.1
