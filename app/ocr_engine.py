@@ -1,9 +1,13 @@
 import os
+
+# Disable MKLDNN/oneDNN to prevent PIR ConvertPirAttribute2RuntimeAttribute crash
+os.environ["FLAGS_use_mkldnn"] = "0"
+os.environ["FLAGS_use_onednn"] = "0"
+os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
 from paddleocr import PaddleOCR
 from typing import Dict, Any, List
-
-# Prevent network checks on every request
-os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
 class PaddleOcrManager:
     _instance = None
@@ -16,7 +20,7 @@ class PaddleOcrManager:
 
     def __init__(self):
         print("Initializing PaddleOCR Engine...")
-        self.ocr = PaddleOCR(use_textline_orientation=True, lang="en")
+        self.ocr = PaddleOCR(use_textline_orientation=True, lang="en", enable_mkldnn=False)
         print("PaddleOCR Engine Ready!")
 
     def predict(self, image_np) -> Dict[str, Any]:
