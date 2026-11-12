@@ -5,8 +5,7 @@ import os
 import cv2
 import spaces
 import gradio as gr
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import File, UploadFile, HTTPException
 from app.models import OcrDraftBillResponse
 from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
@@ -16,28 +15,12 @@ from app.table_reconstructor import TableReconstructor
 ocr_manager = PaddleOcrManager.get_instance()
 table_reconstructor = TableReconstructor()
 
-# 1. Create FastAPI Application
-app = FastAPI(
-    title="MediStock PaddleOCR Backend",
-    description="High-accuracy pharmaceutical invoice extraction service",
-    version="1.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/health")
 def health_check():
     return {
         "status": "ok",
         "ocr_engine": "PaddleOCR v5 (PaddlePaddle 3.3.1)",
         "preprocessing": "OpenCV Geometry & Perspective",
-        "hosting": "Hugging Face Spaces (16 GB RAM / ZeroGPU)",
+        "hosting": "Hugging Face Spaces (ZeroGPU Free)",
         "timestamp": time.time()
     }
 
@@ -63,7 +46,6 @@ def run_ocr_pipeline(image_bytes: bytes):
     )
     return draft_bill
 
-@app.post("/ocr/parse-bill", response_model=OcrDraftBillResponse)
 async def parse_bill_api(file: UploadFile = File(...)):
     start_time = time.time()
     try:
@@ -81,7 +63,6 @@ async def parse_bill_api(file: UploadFile = File(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"PaddleOCR processing error: {str(e)}")
 
-# 2. Gradio Web UI callback
 @spaces.GPU
 def parse_invoice_gradio(image):
     if image is None:
@@ -100,8 +81,12 @@ demo = gr.Interface(
     inputs=gr.Image(type="numpy", label="Upload Pharmaceutical Invoice Image"),
     outputs=gr.Code(language="json", label="Extracted Draft Invoice JSON (24 Line Items)"),
     title="MediStock PaddleOCR Invoice Extraction Engine",
-    description="High accuracy pharmaceutical invoice parser running with 16 GB RAM. Android REST API: POST /ocr/parse-bill"
+    description="High accuracy pharmaceutical invoice parser running with 16 GB RAM / ZeroGPU. Android REST API: POST /ocr/parse-bill"
 )
 
-# 3. Mount Gradio UI at root path
-app = gr.mount_gradio_app(app, demo, path="/")
+# Attach REST routes to demo.app
+demo.app.add_api_route("/health", health_check, methods=["GET"])
+demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"], response_model=OcrDraftBillResponse)
+
+if __name__ == "__main__":
+    demo.launch()
