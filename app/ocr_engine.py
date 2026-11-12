@@ -25,10 +25,22 @@ class PaddleOcrManager:
             use_doc_unwarping=False,
             use_textline_orientation=False,
             text_det_limit_side_len=1280,
-            text_recognition_batch_size=16,
+            text_recognition_batch_size=32,
             lang="en",
             enable_mkldnn=False
         )
+        # Configure internal text recognition model for batch size 32
+        try:
+            p_pipe = getattr(self.ocr, "paddlex_pipeline", None)
+            internal_pipe = getattr(p_pipe, "_pipeline", p_pipe)
+            if internal_pipe and hasattr(internal_pipe, "text_rec_model"):
+                rec_model = getattr(internal_pipe, "text_rec_model")
+                if hasattr(rec_model, "batch_sampler"):
+                    rec_model.batch_sampler.batch_size = 32
+                    print("PaddleOCR: Configured text_rec_model.batch_sampler.batch_size = 32")
+        except Exception as e:
+            print(f"Notice: text_rec batch size adjustment: {e}")
+
         print("PaddleOCR Engine Ready!")
 
     def predict(self, image_np) -> Dict[str, Any]:
@@ -41,7 +53,10 @@ class PaddleOcrManager:
             image_np,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
-            use_textline_orientation=False
+            use_textline_orientation=False,
+            text_det_limit_side_len=1280,
+            text_det_thresh=0.35,
+            text_det_box_thresh=0.65
         )
         if not results:
             return {"rec_texts": [], "rec_scores": [], "rec_boxes": [], "rec_polys": []}
