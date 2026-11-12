@@ -3,38 +3,45 @@ import json
 import time
 import os
 import cv2
+import spaces
 import gradio as gr
-from fastapi import File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from app.models import OcrDraftBillResponse
 from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
 from app.table_reconstructor import TableReconstructor
 
-# Support Hugging Face ZeroGPU
-try:
-    import spaces
-    has_spaces = True
-except ImportError:
-    has_spaces = False
-
-def gpu_decorator(fn):
-    if has_spaces and hasattr(spaces, "GPU"):
-        return spaces.GPU(fn)
-    return fn
-
 # Initialize PaddleOCR and Table Reconstructor
 ocr_manager = PaddleOcrManager.get_instance()
 table_reconstructor = TableReconstructor()
 
+# 1. Create FastAPI Application
+app = FastAPI(
+    title="MediStock PaddleOCR Backend",
+    description="High-accuracy pharmaceutical invoice extraction service",
+    version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
 def health_check():
     return {
         "status": "ok",
         "ocr_engine": "PaddleOCR v5 (PaddlePaddle 3.3.1)",
         "preprocessing": "OpenCV Geometry & Perspective",
+        "hosting": "Hugging Face Spaces (16 GB RAM / ZeroGPU)",
         "timestamp": time.time()
     }
 
-@gpu_decorator
+@spaces.GPU
 def run_ocr_pipeline(image_bytes: bytes):
     corrected_img, meta = preprocess_and_correct_perspective(image_bytes)
     img_h, img_w = corrected_img.shape[:2]
@@ -56,6 +63,7 @@ def run_ocr_pipeline(image_bytes: bytes):
     )
     return draft_bill
 
+@app.post("/ocr/parse-bill", response_model=OcrDraftBillResponse)
 async def parse_bill_api(file: UploadFile = File(...)):
     start_time = time.time()
     try:
@@ -73,8 +81,8 @@ async def parse_bill_api(file: UploadFile = File(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"PaddleOCR processing error: {str(e)}")
 
-# Gradio Web UI callback
-@gpu_decorator
+# 2. Gradio Web UI callback
+@spaces.GPU
 def parse_invoice_gradio(image):
     if image is None:
         return "Please upload an invoice image."
@@ -95,9 +103,5 @@ demo = gr.Interface(
     description="High accuracy pharmaceutical invoice parser running with 16 GB RAM. Android REST API: POST /ocr/parse-bill"
 )
 
-# Register REST endpoints directly on Gradio's FastAPI application
-demo.app.add_api_route("/health", health_check, methods=["GET"])
-demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"], response_model=OcrDraftBillResponse)
-
-if __name__ == "__main__":
-    demo.launch()
+# 3. Mount Gradio UI at root path
+app = gr.mount_gradio_app(app, demo, path="/")
