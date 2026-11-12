@@ -30,10 +30,14 @@ if _orig_json_schema:
 
 import spaces
 import gradio as gr
-from fastapi import File, UploadFile, HTTPException
+from fastapi import File, UploadFile, HTTPException, Header
 from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
 from app.table_reconstructor import TableReconstructor
+
+# API Protection & Payload Boundaries
+OCR_API_KEY = os.getenv("MEDISTOCK_API_KEY", "medistock_sec_9b7c841f3e2a05d8")
+MAX_IMAGE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
 
 # Initialize PaddleOCR and Table Reconstructor
 ocr_manager = PaddleOcrManager.get_instance()
@@ -45,6 +49,7 @@ def health_check():
         "ocr_engine": "PaddleOCR v5 (PaddlePaddle 3.3.1)",
         "preprocessing": "OpenCV Geometry & Perspective",
         "hosting": "Hugging Face Spaces (ZeroGPU Free)",
+        "api_protection": "Active (X-Api-Key)",
         "timestamp": time.time()
     }
 
@@ -74,18 +79,36 @@ def run_ocr_pipeline(image_bytes: bytes):
     )
     return draft_bill
 
-async def parse_bill_api(file: UploadFile = File(...)):
+async def parse_bill_api(
+    file: UploadFile = File(...),
+    x_api_key: str = Header(None, alias="X-Api-Key")
+):
+    # Verify API Key Protection
+    if OCR_API_KEY and x_api_key != OCR_API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: Missing or invalid X-Api-Key header. Only authorized MediStock clients can access this OCR engine."
+        )
+
     start_time = time.time()
     try:
         image_bytes = await file.read()
         if not image_bytes:
             raise HTTPException(status_code=400, detail="Empty image uploaded.")
 
+        if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Payload Too Large: Maximum allowed invoice image size is 15 MB (uploaded {len(image_bytes)} bytes)."
+            )
+
         draft_bill = run_ocr_pipeline(image_bytes)
         elapsed = round(time.time() - start_time, 2)
         print(f"[PaddleOCR] Successfully processed {file.filename} in {elapsed}s: {len(draft_bill.items)} items extracted.")
         return draft_bill.model_dump()
 
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
