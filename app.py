@@ -10,6 +10,18 @@ from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
 from app.table_reconstructor import TableReconstructor
 
+# Support Hugging Face ZeroGPU
+try:
+    import spaces
+    has_spaces = True
+except ImportError:
+    has_spaces = False
+
+def gpu_decorator(fn):
+    if has_spaces and hasattr(spaces, "GPU"):
+        return spaces.GPU(fn)
+    return fn
+
 # Initialize PaddleOCR and Table Reconstructor
 ocr_manager = PaddleOcrManager.get_instance()
 table_reconstructor = TableReconstructor()
@@ -22,6 +34,28 @@ def health_check():
         "timestamp": time.time()
     }
 
+@gpu_decorator
+def run_ocr_pipeline(image_bytes: bytes):
+    corrected_img, meta = preprocess_and_correct_perspective(image_bytes)
+    img_h, img_w = corrected_img.shape[:2]
+
+    ocr_output = ocr_manager.predict(corrected_img)
+    texts = ocr_output["rec_texts"]
+    scores = ocr_output["rec_scores"]
+    boxes = ocr_output["rec_boxes"]
+
+    if not texts:
+        raise HTTPException(status_code=422, detail="No readable text detected on this invoice image.")
+
+    draft_bill = table_reconstructor.reconstruct_invoice(
+        texts=texts,
+        scores=scores,
+        boxes=boxes,
+        image_height=img_h,
+        image_width=img_w
+    )
+    return draft_bill
+
 async def parse_bill_api(file: UploadFile = File(...)):
     start_time = time.time()
     try:
@@ -29,28 +63,7 @@ async def parse_bill_api(file: UploadFile = File(...)):
         if not image_bytes:
             raise HTTPException(status_code=400, detail="Empty image uploaded.")
 
-        # 1. OpenCV Preprocessing & Perspective Transform
-        corrected_img, meta = preprocess_and_correct_perspective(image_bytes)
-        img_h, img_w = corrected_img.shape[:2]
-
-        # 2. PaddleOCR Inference
-        ocr_output = ocr_manager.predict(corrected_img)
-        texts = ocr_output["rec_texts"]
-        scores = ocr_output["rec_scores"]
-        boxes = ocr_output["rec_boxes"]
-
-        if not texts:
-            raise HTTPException(status_code=422, detail="No readable text detected on this invoice image.")
-
-        # 3. Spatial Table & Physical Row Reconstruction
-        draft_bill = table_reconstructor.reconstruct_invoice(
-            texts=texts,
-            scores=scores,
-            boxes=boxes,
-            image_height=img_h,
-            image_width=img_w
-        )
-
+        draft_bill = run_ocr_pipeline(image_bytes)
         elapsed = round(time.time() - start_time, 2)
         print(f"[PaddleOCR] Successfully processed {file.filename} in {elapsed}s: {len(draft_bill.items)} items extracted.")
         return draft_bill
@@ -61,23 +74,14 @@ async def parse_bill_api(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"PaddleOCR processing error: {str(e)}")
 
 # Gradio Web UI callback
+@gpu_decorator
 def parse_invoice_gradio(image):
     if image is None:
         return "Please upload an invoice image."
     try:
         img_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         _, buffer = cv2.imencode(".jpg", img_bgr)
-        corrected_img, _ = preprocess_and_correct_perspective(buffer.tobytes())
-        img_h, img_w = corrected_img.shape[:2]
-
-        ocr_output = ocr_manager.predict(corrected_img)
-        draft = table_reconstructor.reconstruct_invoice(
-            texts=ocr_output["rec_texts"],
-            scores=ocr_output["rec_scores"],
-            boxes=ocr_output["rec_boxes"],
-            image_height=img_h,
-            image_width=img_w
-        )
+        draft = run_ocr_pipeline(buffer.tobytes())
         return json.dumps(draft.model_dump(), indent=2)
     except Exception as e:
         return f"Error: {str(e)}"
