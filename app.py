@@ -6,7 +6,6 @@ import cv2
 import spaces
 import gradio as gr
 from fastapi import File, UploadFile, HTTPException
-from app.models import OcrDraftBillResponse
 from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
 from app.table_reconstructor import TableReconstructor
@@ -56,7 +55,7 @@ async def parse_bill_api(file: UploadFile = File(...)):
         draft_bill = run_ocr_pipeline(image_bytes)
         elapsed = round(time.time() - start_time, 2)
         print(f"[PaddleOCR] Successfully processed {file.filename} in {elapsed}s: {len(draft_bill.items)} items extracted.")
-        return draft_bill
+        return draft_bill.model_dump()
 
     except Exception as e:
         import traceback
@@ -84,9 +83,9 @@ demo = gr.Interface(
     description="High accuracy pharmaceutical invoice parser running with 16 GB RAM / ZeroGPU. Android REST API: POST /ocr/parse-bill"
 )
 
-# Attach REST routes to demo.app
+# Attach REST routes cleanly without complex Pydantic response schema introspection
 demo.app.add_api_route("/health", health_check, methods=["GET"])
-demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"], response_model=OcrDraftBillResponse)
+demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"])
 
 if __name__ == "__main__":
     demo.launch()
