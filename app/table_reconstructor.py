@@ -220,6 +220,10 @@ class TableReconstructor:
         return rows
 
     def _parse_single_row(self, row_words: List[Dict[str, Any]], image_height: int) -> Optional[Dict[str, Any]]:
+        # 1. Normalize comma-separated decimals across all words (e.g. "183,63" -> "183.63")
+        for w in row_words:
+            w["text"] = re.sub(r"(\d+),(\d{2})\b", r"\1.\2", w["text"])
+
         row_text = " ".join(w["text"] for w in row_words).strip()
         if not row_text:
             return None
@@ -251,29 +255,61 @@ class TableReconstructor:
                 }
             return None
 
-        # Extract tokens for this row
-        product_parts = []
-        batch_number = ""
+        # Sort row tokens strictly by x_min (left-to-right positional layout)
+        row_words.sort(key=lambda w: w["x_min"])
+
+        # 2. Locate Expiry Date token
+        expiry_idx = -1
         expiry_date = ""
+        for i, w in enumerate(row_words):
+            exp_match = re.search(r"\b(\d{2}/\d{2,4})\b", w["text"])
+            if exp_match:
+                expiry_idx = i
+                expiry_date = self._normalize_expiry(exp_match.group(1))
+                break
+
+        # 3. Positional Column Extraction for Batch Number
+        batch_number = ""
+        batch_word_idx = -1
+        if expiry_idx > 0:
+            # The token directly preceding expiry is candidate batch
+            for b_idx in range(expiry_idx - 1, -1, -1):
+                candidate_text = row_words[b_idx]["text"].strip()
+                # Skip pack tokens e.g. 10ML, 10'S, 100TAB
+                if re.fullmatch(r"\d+('S|GM|ML|N|T|TAB|CAP|KG|BOX)", candidate_text, re.IGNORECASE):
+                    continue
+                if self._is_valid_batch(candidate_text):
+                    batch_number = candidate_text
+                    batch_word_idx = b_idx
+                    break
+
+        # 4. Extract Product Name tokens (all tokens before Batch/Expiry)
+        product_parts = []
+        name_limit = batch_word_idx if batch_word_idx != -1 else (expiry_idx if expiry_idx != -1 else len(row_words))
+        for i in range(name_limit):
+            t = row_words[i]["text"].strip()
+            if not t:
+                continue
+            # Strip leading HSN code e.g. 30049035
+            if i == 0 and (re.fullmatch(r"\d{8}", t) or (re.fullmatch(r"\d{4,6}", t) and row_words[i]["x_min"] < 120)):
+                continue
+            # Skip pack tokens
+            if re.fullmatch(r"\d+('S|GM|ML|N|T|TAB|CAP|KG|BOX)", t, re.IGNORECASE):
+                continue
+            product_parts.append(t)
+
+        # 5. Extract Numeric Values (all tokens after Expiry)
         quantity = 1
         free_quantity = 0
         purchase_rate = 0.0
         mrp = 0.0
         amount = 0.0
+        decimals: List[float] = []
 
-        for w in row_words:
-            t = w["text"].strip()
+        numeric_start = (expiry_idx + 1) if expiry_idx != -1 else 0
+        for i in range(numeric_start, len(row_words)):
+            t = row_words[i]["text"].strip()
             if not t:
-                continue
-
-            # Strip leading HSN code e.g. 30049035
-            if re.fullmatch(r"\d{8}", t) or (re.fullmatch(r"\d{4,6}", t) and w["x_min"] < 100):
-                continue
-
-            # Expiry check: e.g. 04/28 or 04/2028
-            exp_match = re.search(r"\b(\d{2}/\d{2,4})\b", t)
-            if exp_match and not expiry_date:
-                expiry_date = self._normalize_expiry(exp_match.group(1))
                 continue
 
             # Scheme check: e.g. 5+1 or 10+2
@@ -283,54 +319,70 @@ class TableReconstructor:
                 free_quantity = int(scheme_match.group(2))
                 continue
 
-            # Decimal numbers: could be Rate, MRP, or Line Amount
-            if re.fullmatch(r"\d+\.\d{2}", t):
-                val = float(t)
-                if purchase_rate == 0.0 and val > 0.0:
-                    purchase_rate = val
-                elif mrp == 0.0 and val >= purchase_rate:
-                    mrp = val
-                elif amount == 0.0 and val > 0.0:
-                    amount = val
+            # Decimals: Rate, MRP, Disc%, Amount
+            if re.fullmatch(r"\d+\.\d+", t):
+                try:
+                    decimals.append(float(t))
+                except ValueError:
+                    pass
                 continue
 
-            # Integer quantity
+            # Integer quantity (if not already set by scheme)
             if re.fullmatch(r"\d{1,4}", t):
                 val = int(t)
-                if val > 0 and quantity == 1 and w["x_mid"] > 200:
+                if val > 0 and quantity == 1 and free_quantity == 0:
                     quantity = val
                     continue
 
-            # Batch code: alphanumeric e.g. PJ26019, G2F011108
-            if self._is_valid_batch(t) and not batch_number:
-                batch_number = t
-                continue
+        # Reconcile Decimals mathematically
+        if len(decimals) == 1:
+            purchase_rate = decimals[0]
+            mrp = round(purchase_rate * 1.25, 2)
+            amount = round(quantity * purchase_rate, 2)
+        elif len(decimals) == 2:
+            d1, d2 = decimals[0], decimals[1]
+            purchase_rate = min(d1, d2)
+            mrp = max(d1, d2)
+            amount = round(quantity * purchase_rate, 2)
+        elif len(decimals) >= 3:
+            # Typical order: [Rate, MRP, (Disc%), (Tax%), Amount]
+            d_first = decimals[0]
+            d_second = decimals[1]
+            purchase_rate = d_first
+            mrp = d_second if d_second >= purchase_rate else round(purchase_rate * 1.25, 2)
 
-            # Pack description (e.g. 10ML, 50GM, 10'S, 100TAB)
-            if re.fullmatch(r"\d+('S|GM|ML|N|T|TAB|CAP|KG|BOX)", t, re.IGNORECASE):
-                continue
+            expected_line_amount = round(quantity * purchase_rate, 2)
+            # Find candidate among remaining decimals that best matches expected line amount
+            remaining = decimals[2:]
+            best_match = None
+            for d in remaining:
+                if abs(d - expected_line_amount) <= max(1.0, expected_line_amount * 0.15):
+                    best_match = d
+                    break
 
-            # Otherwise, it forms part of the product name
-            product_parts.append(t)
+            if best_match is not None:
+                amount = best_match
+            elif remaining and remaining[-1] > 5.0 and remaining[-1] >= purchase_rate:
+                amount = remaining[-1]
+            else:
+                amount = expected_line_amount
 
+        # Final sanity check on math: Amount must never be a fraction of Qty * Rate
+        expected_min = round(quantity * purchase_rate * 0.5, 2)
+        if amount <= 0.0 or (purchase_rate > 0.0 and amount < expected_min):
+            amount = round(quantity * purchase_rate, 2)
+
+        if mrp <= 0.0 and purchase_rate > 0.0:
+            mrp = round(purchase_rate * 1.25, 2)
+
+        # 6. Clean product name
         product_name = " ".join(product_parts).strip()
-        product_name = re.sub(r"^\d{4,8}\s*", "", product_name).strip()
-
-        # Clean product name noise (prefixes, trailing schemes/footers, and extract hidden batch)
         product_name, extra_batch = self._clean_product_name(product_name)
         if not batch_number and extra_batch:
             batch_number = extra_batch
 
         if not product_name or len(product_name) < 2:
             return None
-
-        # Calculate effective rate/MRP/amount if some were missing
-        if purchase_rate > 0.0 and mrp == 0.0:
-            mrp = round(purchase_rate * 1.25, 2)
-        if mrp > 0.0 and purchase_rate == 0.0:
-            purchase_rate = mrp
-        if amount == 0.0 and purchase_rate > 0.0:
-            amount = round(quantity * purchase_rate, 2)
 
         # Detect category
         category = self._detect_category(product_name)
@@ -355,16 +407,18 @@ class TableReconstructor:
         # 1. Strip page footers anywhere in string
         name = re.sub(r"\bPage\s*\d+\s*(?:of\s*\d+)?\b", "", name, flags=re.IGNORECASE).strip()
 
-        # 2. Strip leading noise chars / symbols / tick letters
-        name = re.sub(r"^[\$#\-=_~*•?,\s]+", "", name).strip()
-        name = re.sub(r"^\d+[\$sScC]\s*", "", name).strip() # e.g. 20$ or 5c
+        # 2. Strip leading HSN codes (8-digit numbers or OCR-corrupted HSN like 30D4907S, 300420TS, O04909S)
+        name = re.sub(r"^(?:30[0-9A-Z]{4,7}|[O0][0-9A-Z]{6,8}|\d{4,8})\s+", "", name).strip()
+        name = re.sub(r"^(?:IS|T5|300|iie|Z5|ZOC|D9C|2OC\d*)\s*[-:]?\s*", "", name, flags=re.IGNORECASE).strip()
         name = re.sub(r"^[A-Z][,\s]+(?=[A-Z]{2,})", "", name).strip()
-        name = re.sub(r"^(?:IS|T5|300)\s+", "", name).strip()
+        name = re.sub(r"^[\$#\-=_~*•?,\s]+", "", name).strip()
+        name = re.sub(r"^\d+[\$sScC]\s*", "", name).strip()
 
-        # 3. Strip trailing scheme annotations & netrate & symbols
-        name = re.sub(r"\b\d+\s*\+\s*\d+\b", "", name).strip()
+        # 3. Strip trailing prices, decimals, rates, noise
+        name = re.sub(r"\b\d+\s*\+\s*\d+\b", "", name).strip() # schemes
         name = re.sub(r"\bNETRATE\b", "", name, flags=re.IGNORECASE).strip()
-        name = re.sub(r"\s+[\d\.]+$", "", name).strip()
+        name = re.sub(r"\s+[\d\.,]+(?:\s*/\s*\d+)?\.?$", "", name).strip() # trailing prices like "299.64 /23." or "183.63"
+        name = re.sub(r"\s+[0-9]+[L|I|l]\d+(?:\.\d+)?$", "", name).strip() # trailing garbage like "3L19.50"
         name = re.sub(r"\s+\d+[\$sScC]$", "", name).strip()
         name = re.sub(r"\b\d+[a-zA-Z]$", "", name).strip()
 
@@ -372,10 +426,9 @@ class TableReconstructor:
         tokens = name.split()
         if len(tokens) >= 2:
             last = tokens[-1]
-            if re.fullmatch(r"[A-Z0-9]{5,12}", last) and (any(c.isdigit() for c in last) or len(last) >= 6):
-                if not re.search(r"(?:TAB|CAP|SYP|INJ|GEL|ML|GM|MG)", last, re.IGNORECASE):
-                    extracted_batch = last
-                    name = " ".join(tokens[:-1]).strip()
+            if self._is_valid_batch(last) and not re.search(r"(?:TAB|CAP|SYP|INJ|GEL|ML|GM|MG)", last, re.IGNORECASE):
+                extracted_batch = last
+                name = " ".join(tokens[:-1]).strip()
 
         # Final cleanup of trailing hyphens/noise
         name = re.sub(r"[\s\-_?]+$", "", name).strip()
@@ -384,13 +437,16 @@ class TableReconstructor:
     def _is_valid_batch(self, text: str) -> bool:
         if not re.fullmatch(r"[A-Z0-9]{3,14}", text, re.IGNORECASE):
             return False
-        # Must have at least one letter and at least one digit or be a clear batch code
+        # 1. Pure numeric batch (5 to 10 digits e.g. 7260711, 240105)
+        if text.isdigit() and 5 <= len(text) <= 10:
+            return True
+        # 2. Alphanumeric batch with at least one letter and one digit
         has_letter = any(c.isalpha() for c in text)
         has_digit = any(c.isdigit() for c in text)
         if has_letter and has_digit and len(text) >= 4:
             return True
-        # Or standard format like B072
-        if text.startswith("B") and len(text) in (4, 5, 6):
+        # 3. Standard format starting with B / G / K / L / P / F
+        if text[0].upper() in "BGKLPF" and 4 <= len(text) <= 10:
             return True
         return False
 
