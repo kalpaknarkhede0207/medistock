@@ -3,6 +3,25 @@ import json
 import time
 import os
 import cv2
+import gradio_client.utils as cu
+
+# Resolve Gradio 4 OpenAPI schema bug where boolean additionalProperties crashed api_info
+_orig_get_type = getattr(cu, "get_type", None)
+if _orig_get_type:
+    def _safe_get_type(schema):
+        if isinstance(schema, bool):
+            return "bool"
+        return _orig_get_type(schema)
+    cu.get_type = _safe_get_type
+
+_orig_json_schema = getattr(cu, "_json_schema_to_python_type", None)
+if _orig_json_schema:
+    def _safe_json_schema_to_python_type(schema, defs):
+        if isinstance(schema, bool):
+            return "Any"
+        return _orig_json_schema(schema, defs)
+    cu._json_schema_to_python_type = _safe_json_schema_to_python_type
+
 import spaces
 import gradio as gr
 from fastapi import File, UploadFile, HTTPException
@@ -88,4 +107,4 @@ demo.app.add_api_route("/health", health_check, methods=["GET"])
 demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"])
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch()
