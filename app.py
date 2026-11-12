@@ -102,7 +102,17 @@ demo = gr.Interface(
     description="High accuracy pharmaceutical invoice parser running with 16 GB RAM / ZeroGPU. Android REST API: POST /ocr/parse-bill"
 )
 
-# Attach REST routes cleanly without complex Pydantic response schema introspection
+# Attach REST routes to both initial App and runtime App.create_app
+from gradio.routes import App
+
+_orig_create_app = App.create_app
+def _custom_create_app(blocks, *args, **kwargs):
+    app = _orig_create_app(blocks, *args, **kwargs)
+    app.add_api_route("/health", health_check, methods=["GET"])
+    app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"])
+    return app
+App.create_app = _custom_create_app
+
 demo.app.add_api_route("/health", health_check, methods=["GET"])
 demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"])
 
