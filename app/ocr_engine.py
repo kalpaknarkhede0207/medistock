@@ -19,8 +19,16 @@ class PaddleOcrManager:
         return cls._instance
 
     def __init__(self):
-        print("Initializing PaddleOCR Engine...")
-        self.ocr = PaddleOCR(use_textline_orientation=True, lang="en", enable_mkldnn=False)
+        print("Initializing PaddleOCR Engine (Fast CPU inference, batched recognition)...")
+        self.ocr = PaddleOCR(
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            text_det_limit_side_len=1280,
+            text_recognition_batch_size=16,
+            lang="en",
+            enable_mkldnn=False
+        )
         print("PaddleOCR Engine Ready!")
 
     def predict(self, image_np) -> Dict[str, Any]:

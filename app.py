@@ -59,10 +59,13 @@ def _zero_gpu_init():
     return True
 
 def run_ocr_pipeline(image_bytes: bytes):
+    t0 = time.time()
     corrected_img, meta = preprocess_and_correct_perspective(image_bytes)
+    t_geo = time.time()
     img_h, img_w = corrected_img.shape[:2]
 
     ocr_output = ocr_manager.predict(corrected_img)
+    t_ocr = time.time()
     texts = ocr_output["rec_texts"]
     scores = ocr_output["rec_scores"]
     boxes = ocr_output["rec_boxes"]
@@ -77,6 +80,8 @@ def run_ocr_pipeline(image_bytes: bytes):
         image_height=img_h,
         image_width=img_w
     )
+    t_recon = time.time()
+    print(f"[Timing] Preprocessing: {round(t_geo - t0, 3)}s | OCR: {round(t_ocr - t_geo, 3)}s ({len(texts)} texts) | Reconstruction: {round(t_recon - t_ocr, 3)}s | Total: {round(t_recon - t0, 3)}s")
     return draft_bill
 
 async def parse_bill_api(
