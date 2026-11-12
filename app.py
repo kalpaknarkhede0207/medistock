@@ -88,4 +88,4 @@ demo.app.add_api_route("/health", health_check, methods=["GET"])
 demo.app.add_api_route("/ocr/parse-bill", parse_bill_api, methods=["POST"])
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=7860)

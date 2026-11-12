@@ -1,4 +1,4 @@
-fastapi>=0.110.0
+fastapi==0.112.2
 uvicorn[standard]>=0.28.0
 python-multipart>=0.0.9
 paddlepaddle==3.3.1
