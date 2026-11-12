@@ -1,1 +1,1 @@
-# MediStock PaddleOCR Backend Package
+from app.main import app
