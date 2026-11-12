@@ -3,18 +3,15 @@ title: MediStock OCR Backend
 emoji: 💊
 colorFrom: blue
 colorTo: green
-sdk: gradio
-sdk_version: 5.9.1
-app_file: app.py
+sdk: docker
 pinned: false
 license: apache-2.0
 ---
 
 # MediStock PaddleOCR Backend
 
-Production OCR backend for MediStock Android ERP.
+Production OCR backend for MediStock Android ERP running on Hugging Face Spaces.
 
 ## Endpoints:
-- `GET /health`: Engine health check
-- `POST /ocr/parse-bill`: Full invoice parsing with spatial row clustering and mathematical validation
-- `/`: Interactive Gradio web testing interface
+- `GET /health`
+- `POST /ocr/parse-bill`
