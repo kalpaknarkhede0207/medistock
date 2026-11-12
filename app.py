@@ -78,7 +78,7 @@ def parse_invoice_gradio(image):
 demo = gr.Interface(
     fn=parse_invoice_gradio,
     inputs=gr.Image(type="numpy", label="Upload Pharmaceutical Invoice Image"),
-    outputs=gr.Code(language="json", label="Extracted Draft Invoice JSON (24 Line Items)"),
+    outputs=gr.Textbox(label="Extracted Draft Invoice JSON (24 Line Items)", lines=25),
     title="MediStock PaddleOCR Invoice Extraction Engine",
     description="High accuracy pharmaceutical invoice parser running with 16 GB RAM / ZeroGPU. Android REST API: POST /ocr/parse-bill"
 )
