@@ -391,6 +391,23 @@ class TableReconstructor:
         if not product_name or len(product_name) < 2:
             return None
 
+        # Reject product names that are purely digits or punctuation (e.g. dates, numbers)
+        alpha_chars = [c for c in product_name if c.isalpha()]
+        if len(alpha_chars) < 2:
+            return None
+
+        # Reject header/footer lines or phone numbers that bled into row detection
+        upper_name = product_name.upper()
+        header_keywords = [
+            "CASH BILL", "DL NO", "MOB:", "MOBILE", "PHONE", "TOTAL",
+            "AMOUNT", "NAME OF", "PRODUCTS", "PATIENT", "DOCTOR", "DR.",
+            "SUB TOTAL", "NET AMOUNT", "GRAND TOTAL"
+        ]
+        if any(kw in upper_name for kw in header_keywords) and len(alpha_chars) < 6:
+            return None
+        if re.search(r"\b[6-9]\d{9}\b", product_name):
+            return None
+
         # Detect category
         category = self._detect_category(product_name)
 
