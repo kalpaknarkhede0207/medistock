@@ -127,7 +127,12 @@ async def parse_bill(
         print(f"[{draft_bill.parsedSource}] Processed {file.filename} in {elapsed}s: {len(draft_bill.items)} items.")
         return draft_bill
 
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"PaddleOCR processing error: {str(e)}")
+        raise HTTPException(
+            status_code=422,
+            detail="Could not detect printed medicines in this bill. The bill may be handwritten, low contrast, or blurry. You can add items manually."
+        )

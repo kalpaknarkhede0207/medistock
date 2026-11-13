@@ -151,9 +151,11 @@ async def parse_bill_api(
         raise
     except Exception as e:
         import traceback
-        tb = traceback.format_exc()
-        print(tb)
-        raise HTTPException(status_code=500, detail=f"PaddleOCR processing error: {str(e)} | Stack: {tb}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=422,
+            detail="Could not detect printed medicines in this bill. The bill may be handwritten, low contrast, or blurry. You can add items manually."
+        )
 
 async def parse_invoice_gradio(image):
     if image is None:

@@ -65,41 +65,46 @@ class TableReconstructor:
                 continue
 
             # Check if this row is a continuation (wrapped description e.g. "NASAL SOLN", "DROPS")
-            if line_data.get("is_continuation") and current_item is not None:
-                current_item["productName"] += " " + line_data["continuation_text"]
-                # Update bottom crop boundary to include wrapped line
-                current_item["cropBottomPercent"] = max(current_item["cropBottomPercent"], line_data["crop_bottom"])
-            else:
+            if line_data.get("is_continuation"):
                 if current_item is not None:
-                    parsed_items.append(OcrDraftItemResponse(
-                        physicalRowId=f"ROW_{row_index:02d}",
-                        productName=current_item["productName"],
-                        category=current_item["category"],
-                        batchNumber=current_item["batchNumber"],
-                        expiryDate=current_item["expiryDate"],
-                        quantity=current_item["quantity"],
-                        freeQuantity=current_item["freeQuantity"],
-                        purchaseRate=current_item["purchaseRate"],
-                        mrp=current_item["mrp"],
-                        amount=current_item["amount"],
-                        cropTopPercent=current_item["cropTopPercent"],
-                        cropBottomPercent=current_item["cropBottomPercent"]
-                    ))
-                    row_index += 1
+                    current_item["productName"] += " " + line_data.get("continuation_text", "")
+                    # Update bottom crop boundary to include wrapped line
+                    current_item["cropBottomPercent"] = max(current_item["cropBottomPercent"], line_data.get("crop_bottom", 0.0))
+                continue
 
-                current_item = {
-                    "productName": line_data["product_name"],
-                    "category": line_data["category"],
-                    "batchNumber": line_data["batch_number"],
-                    "expiryDate": line_data["expiry_date"],
-                    "quantity": line_data["quantity"],
-                    "freeQuantity": line_data["free_quantity"],
-                    "purchaseRate": line_data["purchase_rate"],
-                    "mrp": line_data["mrp"],
-                    "amount": line_data["amount"],
-                    "cropTopPercent": line_data["crop_top"],
-                    "cropBottomPercent": line_data["crop_bottom"]
-                }
+            if not line_data.get("product_name"):
+                continue
+
+            if current_item is not None:
+                parsed_items.append(OcrDraftItemResponse(
+                    physicalRowId=f"ROW_{row_index:02d}",
+                    productName=current_item["productName"],
+                    category=current_item["category"],
+                    batchNumber=current_item["batchNumber"],
+                    expiryDate=current_item["expiryDate"],
+                    quantity=current_item["quantity"],
+                    freeQuantity=current_item["freeQuantity"],
+                    purchaseRate=current_item["purchaseRate"],
+                    mrp=current_item["mrp"],
+                    amount=current_item["amount"],
+                    cropTopPercent=current_item["cropTopPercent"],
+                    cropBottomPercent=current_item["cropBottomPercent"]
+                ))
+                row_index += 1
+
+            current_item = {
+                "productName": line_data["product_name"],
+                "category": line_data.get("category", "Medicine"),
+                "batchNumber": line_data.get("batch_number", ""),
+                "expiryDate": line_data.get("expiry_date", ""),
+                "quantity": line_data.get("quantity", 1),
+                "freeQuantity": line_data.get("free_quantity", 0),
+                "purchaseRate": line_data.get("purchase_rate", 0.0),
+                "mrp": line_data.get("mrp", 0.0),
+                "amount": line_data.get("amount", 0.0),
+                "cropTopPercent": line_data.get("crop_top", 0.0),
+                "cropBottomPercent": line_data.get("crop_bottom", 1.0)
+            }
 
         # Append last pending item
         if current_item is not None:

@@ -81,5 +81,29 @@ class TestHybridPipeline(unittest.TestCase):
         )
         self.assertIsNone(result)
 
+    def test_reconstruct_continuation_without_prior_item_does_not_crash(self):
+        # Header + continuation row (no previous item) - previously threw KeyError: 'product_name'
+        texts = ["M/s. SIYARAM MEDICAL", "Name of the Products", "Qty.", "Amount", "NASAL DROPS ONLY", "Total :"]
+        scores = [0.95, 0.9, 0.9, 0.9, 0.9, 0.9]
+        boxes = [
+            [20, 20, 200, 40],
+            [20, 160, 150, 180],
+            [160, 160, 200, 180],
+            [210, 160, 260, 180],
+            [20, 220, 150, 240], # continuation text in body
+            [20, 750, 100, 780]
+        ]
+        result = self.reconstructor.reconstruct_invoice(
+            texts=texts,
+            scores=scores,
+            boxes=boxes,
+            image_height=1000,
+            image_width=800
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual("M/s. SIYARAM MEDICAL", result.supplierName)
+        # Should gracefully return empty items list without raising KeyError
+        self.assertEqual(0, len(result.items))
+
 if __name__ == "__main__":
     unittest.main()
