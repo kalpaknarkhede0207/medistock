@@ -8,6 +8,7 @@ os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 import io
 import json
 import time
+import asyncio
 import cv2
 import gradio_client.utils as cu
 
@@ -34,19 +35,22 @@ from fastapi import File, UploadFile, HTTPException, Header, Response
 from app.geometry import preprocess_and_correct_perspective
 from app.ocr_engine import PaddleOcrManager
 from app.table_reconstructor import TableReconstructor
+from app.qwen_parser import QwenInvoiceParser
 
 # API Protection & Payload Boundaries
 OCR_API_KEY = os.getenv("MEDISTOCK_API_KEY", "medistock_sec_9b7c841f3e2a05d8")
 MAX_IMAGE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
 
-# Initialize PaddleOCR and Table Reconstructor
+# Initialize PaddleOCR, Qwen Parser and Table Reconstructor
 ocr_manager = PaddleOcrManager.get_instance()
 table_reconstructor = TableReconstructor()
+qwen_parser = QwenInvoiceParser()
 
 def health_check():
     return {
         "status": "ok",
         "ocr_engine": "PaddleOCR v5 (PaddlePaddle 3.3.1)",
+        "hybrid_llm": f"Qwen 2.5 (Configured: {qwen_parser.is_configured()})",
         "preprocessing": "OpenCV Geometry & Perspective",
         "hosting": "Hugging Face Spaces (ZeroGPU Free)",
         "api_protection": "Active (X-Api-Key)",
@@ -58,7 +62,7 @@ def health_check():
 def _zero_gpu_init():
     return True
 
-def run_ocr_pipeline(image_bytes: bytes):
+async def run_ocr_pipeline(image_bytes: bytes):
     t0 = time.time()
     corrected_img, meta = preprocess_and_correct_perspective(image_bytes)
     t_geo = time.time()
@@ -73,15 +77,42 @@ def run_ocr_pipeline(image_bytes: bytes):
     if not texts:
         raise HTTPException(status_code=422, detail="No readable text detected on this invoice image.")
 
-    draft_bill = table_reconstructor.reconstruct_invoice(
-        texts=texts,
-        scores=scores,
-        boxes=boxes,
-        image_height=img_h,
-        image_width=img_w
-    )
+    # 3. Hybrid Structuring Route (PaddleOCR + Qwen LLM)
+    draft_bill = None
+    t_llm_start = time.time()
+    if qwen_parser.is_configured():
+        try:
+            words = table_reconstructor.prepare_words(texts, scores, boxes)
+            clustered_lines, header_summary, rows, sup, inv, bdate, tot = table_reconstructor.get_row_clusters_and_header(words)
+            if clustered_lines:
+                llm_data = await qwen_parser.parse_ocr_text_with_qwen(clustered_lines, header_summary)
+                if llm_data:
+                    draft_bill = table_reconstructor.reconcile_llm_result(
+                        llm_data=llm_data,
+                        rows=rows,
+                        image_height=img_h,
+                        fallback_supplier=sup,
+                        fallback_invoice=inv,
+                        fallback_date=bdate,
+                        fallback_total=tot
+                    )
+                    if draft_bill:
+                        print(f"[Hybrid] Successfully structured {len(draft_bill.items)} items via Qwen LLM.")
+        except Exception as e:
+            print(f"[Hybrid] Qwen structuring fallback: {e}")
+    t_llm_end = time.time()
+
+    # 4. Fallback to Native Spatial Table Reconstructor
+    if draft_bill is None:
+        draft_bill = table_reconstructor.reconstruct_invoice(
+            texts=texts,
+            scores=scores,
+            boxes=boxes,
+            image_height=img_h,
+            image_width=img_w
+        )
     t_recon = time.time()
-    timings = f"geo={round(t_geo - t0, 3)}s, ocr={round(t_ocr - t_geo, 3)}s ({len(texts)} texts), recon={round(t_recon - t_ocr, 3)}s, total={round(t_recon - t0, 3)}s"
+    timings = f"geo={round(t_geo - t0, 3)}s, ocr={round(t_ocr - t_geo, 3)}s ({len(texts)} texts), llm={round(t_llm_end - t_llm_start, 3)}s, recon={round(t_recon - t_ocr, 3)}s, total={round(t_recon - t0, 3)}s"
     print(f"[Timing] {timings}")
     return draft_bill, timings
 
@@ -109,7 +140,7 @@ async def parse_bill_api(
                 detail=f"Payload Too Large: Maximum allowed invoice image size is 15 MB (uploaded {len(image_bytes)} bytes)."
             )
 
-        draft_bill, timings = run_ocr_pipeline(image_bytes)
+        draft_bill, timings = await run_ocr_pipeline(image_bytes)
         elapsed = round(time.time() - start_time, 2)
         response.headers["X-Process-Time"] = f"{elapsed}s"
         response.headers["X-OCR-Timings"] = timings
@@ -124,13 +155,13 @@ async def parse_bill_api(
         print(tb)
         raise HTTPException(status_code=500, detail=f"PaddleOCR processing error: {str(e)} | Stack: {tb}")
 
-def parse_invoice_gradio(image):
+async def parse_invoice_gradio(image):
     if image is None:
         return "Please upload an invoice image."
     try:
         img_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         _, buffer = cv2.imencode(".jpg", img_bgr)
-        draft, _ = run_ocr_pipeline(buffer.tobytes())
+        draft, _ = await run_ocr_pipeline(buffer.tobytes())
         return json.dumps(draft.model_dump(), indent=2)
     except Exception as e:
         return f"Error: {str(e)}"

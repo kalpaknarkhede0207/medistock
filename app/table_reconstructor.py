@@ -472,3 +472,171 @@ class TableReconstructor:
         if any(k in u for k in ["SURGICAL", "GLOVES", "SYRINGE", "NEEDLE", "BANDAGE", "COTTON", "GAUZE", "CATHETER"]):
             return "Surgical"
         return "Medicine"
+
+    def prepare_words(
+        self,
+        texts: List[str],
+        scores: List[float],
+        boxes: List[List[float]]
+    ) -> List[Dict[str, Any]]:
+        words = []
+        for text, score, box in zip(texts, scores, boxes):
+            x_min, y_min, x_max, y_max = box
+            words.append({
+                "text": text.strip(),
+                "score": score,
+                "x_min": x_min,
+                "y_min": y_min,
+                "x_max": x_max,
+                "y_max": y_max,
+                "x_mid": (x_min + x_max) / 2.0,
+                "y_mid": (y_min + y_max) / 2.0,
+                "height": y_max - y_min,
+                "width": x_max - x_min
+            })
+        return words
+
+    def get_row_clusters_and_header(
+        self,
+        words: List[Dict[str, Any]]
+    ) -> Tuple[List[str], str, List[List[Dict[str, Any]]], str, str, str, float]:
+        """
+        Extracts header information, clusters body text into physical lines,
+        and returns data formatted for LLM structuring.
+        """
+        supplier_name = self._extract_supplier_name(words)
+        invoice_no = self._extract_invoice_number(words)
+        bill_date = self._extract_bill_date(words)
+        table_header_y = self._find_table_header_y(words)
+        footer_y, total_amount = self._find_footer_y_and_total(words, table_header_y)
+
+        body_words = [
+            w for w in words
+            if w["y_min"] >= table_header_y and (footer_y == 0 or w["y_min"] < footer_y + 15)
+        ]
+        rows = self._cluster_rows_by_y(body_words, y_tolerance=9.5)
+
+        clustered_lines = []
+        for r in rows:
+            # Sort words in row from left to right
+            sorted_w = sorted(r, key=lambda w: w["x_min"])
+            line_str = " | ".join(w["text"] for w in sorted_w)
+            if line_str.strip():
+                clustered_lines.append(line_str)
+
+        header_summary = f"Supplier: {supplier_name}, Invoice #: {invoice_no}, Date: {bill_date}, Detected Total: ₹{total_amount}"
+        return clustered_lines, header_summary, rows, supplier_name, invoice_no, bill_date, total_amount
+
+    def reconcile_llm_result(
+        self,
+        llm_data: Dict[str, Any],
+        rows: List[List[Dict[str, Any]]],
+        image_height: int,
+        fallback_supplier: str = "",
+        fallback_invoice: str = "",
+        fallback_date: str = "",
+        fallback_total: float = 0.0
+    ) -> Optional[OcrDraftBillResponse]:
+        """
+        Reconciles Qwen LLM output with physical row bounding boxes and strict arithmetic integrity.
+        """
+        raw_items = llm_data.get("items")
+        if not raw_items or not isinstance(raw_items, list):
+            return None
+
+        supplier_name = (llm_data.get("supplierName") or fallback_supplier).strip()
+        invoice_no = (llm_data.get("invoiceNo") or fallback_invoice).strip()
+        bill_date = (llm_data.get("billDate") or fallback_date).strip()
+
+        reconciled_items: List[OcrDraftItemResponse] = []
+        for i, item in enumerate(raw_items):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("productName", "")).strip()
+            if not name or len(name) < 2:
+                continue
+
+            # Clean name noise
+            cleaned_name, ext_batch = self._clean_product_name(name)
+            name = cleaned_name
+            if not name:
+                continue
+
+            batch = str(item.get("batchNumber", "")).strip()
+            if not batch and ext_batch:
+                batch = ext_batch
+            expiry = str(item.get("expiryDate", "")).strip()
+            if expiry:
+                expiry = self._normalize_expiry(expiry)
+
+            try:
+                qty = max(1, int(float(item.get("quantity", 1))))
+            except Exception:
+                qty = 1
+
+            try:
+                free_qty = max(0, int(float(item.get("freeQuantity", 0))))
+            except Exception:
+                free_qty = 0
+
+            try:
+                rate = round(float(item.get("purchaseRate", 0.0)), 2)
+            except Exception:
+                rate = 0.0
+
+            try:
+                mrp = round(float(item.get("mrp", 0.0)), 2)
+            except Exception:
+                mrp = 0.0
+
+            # Default MRP if rate is known
+            if mrp <= 0.0 and rate > 0.0:
+                mrp = round(rate * 1.25, 2)
+            elif rate <= 0.0 and mrp > 0.0:
+                rate = mrp
+
+            # Strict arithmetic verification
+            amount = round(qty * rate, 2)
+
+            # Assign row crop bounds by approximate row index or matching
+            row_idx = min(i, len(rows) - 1) if rows else 0
+            if rows and row_idx < len(rows):
+                target_row = rows[row_idx]
+                min_y = min(w["y_min"] for w in target_row)
+                max_y = max(w["y_max"] for w in target_row)
+                crop_top = max(0.0, (min_y - 4.0) / max(1, image_height))
+                crop_bottom = min(1.0, (max_y + 4.0) / max(1, image_height))
+            else:
+                crop_top = 0.0
+                crop_bottom = 1.0
+
+            reconciled_items.append(OcrDraftItemResponse(
+                physicalRowId=f"ROW_{i+1:02d}",
+                productName=name,
+                category=self._detect_category(name),
+                batchNumber=batch,
+                expiryDate=expiry,
+                quantity=qty,
+                freeQuantity=free_qty,
+                purchaseRate=rate,
+                mrp=mrp,
+                amount=amount,
+                cropTopPercent=crop_top,
+                cropBottomPercent=crop_bottom
+            ))
+
+        if not reconciled_items:
+            return None
+
+        total_amount = round(sum(it.amount for it in reconciled_items), 2)
+        if fallback_total > 0 and abs(fallback_total - total_amount) < 2.0:
+            total_amount = fallback_total
+
+        return OcrDraftBillResponse(
+            supplierName=supplier_name if supplier_name else "Pharmaceutical Supplier",
+            invoiceNo=invoice_no if invoice_no else "",
+            billDate=bill_date if bill_date else "",
+            totalAmount=total_amount,
+            parsedSource="PaddleOCR + Qwen Hybrid Engine",
+            items=reconciled_items
+        )
