@@ -147,19 +147,21 @@ class TableReconstructor:
         return "Pharmaceutical Supplier"
 
     def _extract_invoice_number(self, words: List[Dict[str, Any]]) -> str:
+        ignore_words = {"NO", "BILL", "INV", "INVOICE", "QTY", "RATE", "MRP", "AMOUNT", "NAME", "SR", "SL", "PATIENT", "DOCTOR", "DR", "CASH", "DATE", "TIME"}
         for i, w in enumerate(words[:40]):
             t = w["text"]
             # Standalone invoice code pattern like F/383149 or INV-2024
             if re.fullmatch(r"[A-Z]{1,4}[/-]\d{4,10}", t):
                 return t
-            # Check for label "Bill No" or "Invoice No" and take adjacent token
-            if re.search(r"\b(?:Bill|Invoice|Inv)\s*(?:No|#)?\b", t, re.IGNORECASE):
-                parts = re.split(r"[:\s]+", t)
-                if len(parts) > 1 and parts[-1].upper() not in ("NO", "BILL", "INV", "INVOICE", ""):
-                    return parts[-1]
+            # Check for label "Bill No", "Invoice No", etc.
+            if re.search(r"\b(?:Bill\s*No|Invoice\s*No|Inv\s*No|Bill\s*#|Invoice\s*#|Inv\s*#|Invoice\s*:|Bill\s*:)\b", t, re.IGNORECASE):
+                parts = re.split(r"[:\s#]+", t)
+                for p in reversed(parts):
+                    if p.upper() not in ignore_words and len(p) >= 2 and any(ch.isalnum() for ch in p):
+                        return p
                 if i + 1 < len(words):
                     next_t = words[i + 1]["text"].strip()
-                    if next_t.upper() not in ("NO", "DATE", "TIME") and len(next_t) >= 2:
+                    if next_t.upper() not in ignore_words and len(next_t) >= 2 and any(ch.isalnum() for ch in next_t):
                         return next_t
         return ""
 
