@@ -341,36 +341,36 @@ class TableReconstructor:
                     quantity = val
                     continue
 
-        # Reconcile Decimals mathematically
+        # Reconcile Decimals mathematically with Invariant: Purchase Rate <= MRP
         if len(decimals) == 1:
             purchase_rate = decimals[0]
             mrp = round(purchase_rate * 1.25, 2)
             amount = round(quantity * purchase_rate, 2)
-        elif len(decimals) == 2:
-            d1, d2 = decimals[0], decimals[1]
-            purchase_rate = min(d1, d2)
-            mrp = max(d1, d2)
-            amount = round(quantity * purchase_rate, 2)
-        elif len(decimals) >= 3:
-            # Typical order: [Rate, MRP, (Disc%), (Tax%), Amount]
-            d_first = decimals[0]
-            d_second = decimals[1]
-            purchase_rate = d_first
-            mrp = d_second if d_second >= purchase_rate else round(purchase_rate * 1.25, 2)
+        elif len(decimals) >= 2:
+            d_cand1, d_cand2 = decimals[0], decimals[1]
+            # Absolute Pharmaceutical Domain Invariant: Purchase Rate <= MRP
+            d_min = min(d_cand1, d_cand2)
+            d_max = max(d_cand1, d_cand2)
+            purchase_rate = d_min
+            mrp = d_max
 
             expected_line_amount = round(quantity * purchase_rate, 2)
-            # Find candidate among remaining decimals that best matches expected line amount
-            remaining = decimals[2:]
-            best_match = None
-            for d in remaining:
-                if abs(d - expected_line_amount) <= max(1.0, expected_line_amount * 0.15):
-                    best_match = d
-                    break
 
-            if best_match is not None:
-                amount = best_match
-            elif remaining and remaining[-1] > 5.0 and remaining[-1] >= purchase_rate:
-                amount = remaining[-1]
+            if len(decimals) >= 3:
+                # Find candidate among remaining decimals that best matches expected line amount
+                remaining = decimals[2:]
+                best_match = None
+                for d in remaining:
+                    if abs(d - expected_line_amount) <= max(1.0, expected_line_amount * 0.15):
+                        best_match = d
+                        break
+
+                if best_match is not None:
+                    amount = best_match
+                elif remaining and remaining[-1] > 5.0 and remaining[-1] >= purchase_rate:
+                    amount = remaining[-1]
+                else:
+                    amount = expected_line_amount
             else:
                 amount = expected_line_amount
 
@@ -381,6 +381,10 @@ class TableReconstructor:
 
         if mrp <= 0.0 and purchase_rate > 0.0:
             mrp = round(purchase_rate * 1.25, 2)
+
+        # Invariant Guarantee: Purchase Rate can never exceed MRP
+        if purchase_rate > mrp and mrp > 0.0:
+            purchase_rate, mrp = mrp, purchase_rate
 
         # 6. Clean product name
         product_name = " ".join(product_parts).strip()

@@ -68,7 +68,7 @@ RULES:
 2. Maintain exact pure numeric (e.g. 7260711) or alphanumeric batch numbers. Do NOT merge batch codes into product names.
 3. Expiry format must be MM/YYYY or MM/YY.
 4. Normalize comma decimals (e.g. 183,63 -> 183.63).
-5. Purchase Rate is unit cost. MRP is retail price.
+5. Purchase Rate is unit wholesale cost. MRP is retail selling price. INVARIANT: Purchase Rate MUST ALWAYS be less than or equal to MRP (purchaseRate <= mrp). Never invert them.
 6. Return ONLY valid JSON in this exact structure with no conversational text:
 
 {{
@@ -141,30 +141,49 @@ RULES:
             print(f"[QwenParser] Ollama call failed: {e}")
             return None
 
+    def _sanitize_extracted_json(self, data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not data or not isinstance(data, dict):
+            return data
+        items = data.get("items")
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    pr = float(item.get("purchaseRate", 0.0) or 0.0)
+                    mrp = float(item.get("mrp", 0.0) or 0.0)
+                    if pr > mrp and mrp > 0.0:
+                        item["purchaseRate"] = mrp
+                        item["mrp"] = pr
+                    elif mrp <= 0.0 and pr > 0.0:
+                        item["mrp"] = round(pr * 1.25, 2)
+        return data
+
     def _extract_json_from_text(self, text: str) -> Optional[Dict[str, Any]]:
         if not text:
             return None
+        parsed = None
         try:
             # 1. Direct JSON parse
-            return json.loads(text.strip())
+            parsed = json.loads(text.strip())
         except Exception:
             pass
 
         # 2. Extract from ```json ... ``` code fence
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-        if match:
-            try:
-                return json.loads(match.group(1).strip())
-            except Exception:
-                pass
+        if not parsed:
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+            if match:
+                try:
+                    parsed = json.loads(match.group(1).strip())
+                except Exception:
+                    pass
 
         # 3. Search for outermost balanced { ... }
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(text[start:end+1])
-            except Exception:
-                pass
+        if not parsed:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    parsed = json.loads(text[start:end+1])
+                except Exception:
+                    pass
 
-        return None
+        return self._sanitize_extracted_json(parsed)
